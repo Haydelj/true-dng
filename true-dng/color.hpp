@@ -88,6 +88,10 @@ inline void load_from_csv(const std::string& file_path, std::vector<glm::vec2>& 
 		}
 		data.emplace_back(x, y);
 	}
+
+	if(data.back().y > 1e38)
+		data.pop_back();
+
 	str.close();
 }
 
@@ -108,6 +112,25 @@ inline float sample(const std::vector<glm::vec2>& data, float x)
 
 	float blend = (x - data[start].x) / (data[start + 1].x - data[start].x);
 	return glm::mix(data[start].y, data[start + 1].y, blend);
+}
+
+inline float inverse_sample(const std::vector<glm::vec2>& data, float y)
+{
+	if(y < data[0].y) return data[0].x;
+	if(y >= data.back().y) return data.back().x;
+
+	uint32_t start = 0;
+	uint32_t end = data.size();
+
+	while((start + 1) != end)
+	{
+		uint32_t middle = (start + end) / 2;
+		if(y >= data[middle].y) start = middle;
+		else                    end = middle;
+	}
+
+	float blend = (y - data[start].y) / (data[start + 1].y - data[start].y);
+	return glm::mix(data[start].x, data[start + 1].x, blend);
 }
 
 struct PaperProfile
@@ -183,6 +206,24 @@ struct PaperProfile
 
 				dye_to_xyz = glm::mat3(rc, gc, bc);
 				xyz_to_dye = glm::inverse(dye_to_xyz);
+			}
+
+			//white blance curves
+			{
+				float r18 = 0.18f / inverse_sample(r_curve, 1.0f / 0.18);
+				float g18 = 0.18f / inverse_sample(g_curve, 1.0f / 0.18);
+				float b18 = 0.18f / inverse_sample(b_curve, 1.0f / 0.18);
+
+				for(uint32_t i = 0; i < r_curve.size(); ++i)
+					r_curve[i].x *= r18;
+
+				for(uint32_t i = 0; i < g_curve.size(); ++i)
+					g_curve[i].x *= g18;
+
+				for(uint32_t i = 0; i < b_curve.size(); ++i)
+					b_curve[i].x *= b18;
+
+				printf("%f, %f, %f\n", 1.0f / sample(r_curve, 0.18f), 1.0f / sample(g_curve, 0.18f), 1.0f / sample(b_curve, 0.18f));
 			}
 		}
 	}

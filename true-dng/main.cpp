@@ -46,7 +46,7 @@ glm::mat3 forward_matrix(
     glm::vec3(0.19788, 0.01196, 0.84502));
 
 float c = 1.0f, m = 1.0f, y = 1.0;
-float contrast = 2.0, exposure = 1.0f, shadow_density = 1.0f;
+float gamma = 4.0, exposure = 1.0f, shadow_density = 1.0f;
 float black_point(0.0f);
 float white_point(0.0f);
 uint32_t vp_xres = 1, vp_yres = 1;
@@ -67,24 +67,36 @@ inline void write_histo(glm::vec3& color)
     histogram[index]++;
 }
 
-static glm::vec3 sigmoid(glm::vec3 in, float contrast)
+static glm::vec3 invert(glm::vec3 neg_color, float g)
 {
-    //glm::vec3 out = glm::log(in) - glm::log(glm::vec3(0.18));
-    //out = glm::exp(out * contrast + glm::log(glm::vec3(0.18)));
+    glm::vec3 pos_color = 0.01f / neg_color;
+    return glm::pow(pos_color, glm::vec3(g)) * glm::pow(0.18f, 1.0f - g);
+}
 
-    glm::vec3 out = glm::pow(in, glm::vec3(contrast)) * glm::pow(0.18f, 1.0f - contrast);
-    return out / (out + 1.0f);
+static glm::vec3 reinhard(glm::vec3 in)
+{
+    const glm::vec3 bp = glm::pow(glm::vec3(16, 19, 21) / 255.0f, glm::vec3(2.2));
+    const glm::vec3 wp(1.00, 1.0, 1.0);
+
+    glm::vec3 out = in / (in + 1.0f);
+    return (out + bp) * (wp - bp);
 }
 
 static glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in)
 {
+    const float bp = 1.0f / glm::max(glm::max(paper.r_curve.back().y, paper.g_curve.back().y), paper.b_curve.back().y);
+    const float wp = 1.0f / glm::min(glm::min(paper.r_curve.front().y, paper.g_curve.front().y), paper.b_curve.front().y);
+
     glm::vec3 out = paper.xyz_to_sens * rec2020_to_xyz * in;
     out.x = 1.0 / sample(paper.r_curve, out.x);
     out.y = 1.0 / sample(paper.g_curve, out.y);
     out.z = 1.0 / sample(paper.b_curve, out.z);
+
+    out = out / wp;
+
     out = xyz_to_rec709 * paper.dye_to_xyz * out;
-    out = glm::pow(out, glm::vec3(1.0 / 2.2f));
-    return clamp(out, 0.0f, 1.0f);
+    out = clamp(out, 0.0f, 1.0f);
+    return glm::pow(out, glm::vec3(1.0 / 2.2f));
 }
 
 glm::vec3 tonemap(glm::vec3 neg_color)
@@ -94,11 +106,13 @@ glm::vec3 tonemap(glm::vec3 neg_color)
     else if(paper_model == 3) return paper_tonemap(ultra, neg_color);
     else if(paper_model == 4) return paper_tonemap(ektacolor, neg_color);
     else if(paper_model == 5) return paper_tonemap(pfe_2383, neg_color);
+    else if(paper_model == 6) return paper_tonemap(pfe_2393, neg_color);
 
     //variable contrast reinhard tonemap in rec2020
-    glm::vec3 pos_color = 0.01f / neg_color - shadow_density * 0.01f / white_point;
-    pos_color = sigmoid(pos_color, contrast);
-    pos_color = rec2020_to_rec709 * pos_color;
+    neg_color = endura.xyz_to_sens * rec2020_to_xyz * neg_color;
+    glm::vec3 pos_color = invert(neg_color, gamma);
+    pos_color = reinhard(pos_color);
+    pos_color = xyz_to_rec709 * endura.dye_to_xyz * pos_color;
     pos_color = clamp(pos_color, 0.0f, 1.0f);
     pos_color = glm::pow(pos_color, glm::vec3(1.0f / 2.2f));
     return pos_color;
@@ -140,7 +154,7 @@ void render_paper(tinydng::DNGImage& src)
     white_point = glm::max(wp.r, glm::max(wp.g, wp.b));
 }
 
-std::string filename = "02-25-2026-xx-";
+std::string filename = "test-";
 static void write_image(tinydng::DNGImage& src)
 {
     tinydngwriter::DNGImage dng_image;
@@ -202,8 +216,7 @@ static void write_image(tinydng::DNGImage& src)
             {
                 glm::vec3 neg_color = negative[i] * glm::vec3(c, m, y) * exposure;
 
-                glm::vec3 raw_out = 0.01f / neg_color - 0.01f / white_point;
-                raw_out = glm::pow(raw_out, glm::vec3(1.5f)) * glm::pow(0.18f, -0.5f);
+                glm::vec3 raw_out = invert(neg_color, gamma - 1.5f);
                 raw_out = rec2020_to_xyz * raw_out;
                 raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
                 raw_data[i * 3 + 0] = (uint16_t)(raw_out.r * 0xffff + 0.5f);
@@ -236,9 +249,9 @@ static void write_image(tinydng::DNGImage& src)
     std::string err;
     tinydngwriter::DNGWriter dng_writer(big_endian);
     dng_writer.AddImage(&dng_image);
-    dng_writer.WriteToFile(("output/" + filename + ".dng").c_str(), &err);
+    dng_writer.WriteToFile(("output/dngs/" + filename + ".dng").c_str(), &err);
 
-    stbi_write_jpg(("output/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
+    stbi_write_jpg(("output/jpgs/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
 }
 
 int main(int argc, char* argv[])
@@ -290,6 +303,7 @@ int main(int argc, char* argv[])
         forward_matrix[1] *= scale.y;
         forward_matrix[2] *= scale.z;
 
+        glm::vec3 sum(0.0f);
         if(images[0].samples_per_pixel == 3)
         {
             for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
@@ -297,6 +311,7 @@ int main(int argc, char* argv[])
                 uint16_t* data = ((uint16_t*)images[0].data.data()) + i * 3;
                 negative[i] = glm::vec3(data[0], data[1], data[2]) / glm::vec3(65535.0f);
                 negative[i] = xyz_to_rec2020 * forward_matrix * negative[i];
+                sum += 1.0f / negative[i];
             }
         }
         else
@@ -307,6 +322,11 @@ int main(int argc, char* argv[])
                 negative[i] = glm::vec3(data[0]) / glm::vec3(65535.0f);
             }
         }
+
+        sum /= sum.g;
+        c = sum.r;
+        m = sum.g;
+        y = sum.b;
 
         do
         {
@@ -325,6 +345,7 @@ int main(int argc, char* argv[])
             if(GetAsyncKeyState('3')) paper_model = 3;
             if(GetAsyncKeyState('4')) paper_model = 4;
             if(GetAsyncKeyState('5')) paper_model = 5;
+            if(GetAsyncKeyState('6')) paper_model = 6;
 
             if(GetAsyncKeyState(VK_SHIFT)) inc = 1.10;
 
@@ -338,8 +359,8 @@ int main(int argc, char* argv[])
             if(GetAsyncKeyState(VK_UP))   exposure /= inc;
             if(GetAsyncKeyState(VK_DOWN)) exposure *= inc;
 
-            if(GetAsyncKeyState(VK_LEFT)) contrast /= inc;
-            if(GetAsyncKeyState(VK_RIGHT)) contrast *= inc;
+            if(GetAsyncKeyState(VK_LEFT)) gamma /= inc;
+            if(GetAsyncKeyState(VK_RIGHT)) gamma *= inc;
 
             if(GetAsyncKeyState('Z')) black_point /= inc;
             if(GetAsyncKeyState('X')) black_point *= inc;
