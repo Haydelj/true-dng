@@ -46,9 +46,7 @@ glm::mat3 forward_matrix(
     glm::vec3(0.19788, 0.01196, 0.84502));
 
 float c = 1.0f, m = 1.0f, y = 1.0;
-float gamma = 4.0, exposure = 1.0f, shadow_density = 1.0f;
-float black_point(0.0f);
-float white_point(0.0f);
+float contrats = 1.0, exposure = 1.0f;
 uint32_t vp_xres = 1, vp_yres = 1;
 glm::vec3 negative[64 * 1024 * 1024];
 
@@ -67,15 +65,10 @@ inline void write_histo(glm::vec3& color)
     histogram[index]++;
 }
 
-static glm::vec3 invert(glm::vec3 neg_color, float g)
-{
-    glm::vec3 pos_color = 0.01f / neg_color;
-    return glm::pow(pos_color, glm::vec3(g)) * glm::pow(0.18f, 1.0f - g);
-}
-
 static glm::vec3 virtual_paper(glm::vec3 neg_color)
 {
-    glm::vec3 out = invert(neg_color, gamma);
+    glm::vec3 out = 0.01f / neg_color;
+    out = glm::pow(out, glm::vec3(contrats + 1.0f)) * glm::pow(0.18f, -contrats);
     out = glm::log(out);
     out = glm::tanh(out) * 0.5f + 0.5f;
     return out;
@@ -108,9 +101,8 @@ glm::vec3 tonemap(glm::vec3 neg_color)
     else if(paper_model == 6) return paper_tonemap(pfe_2393, neg_color);
 
     //variable contrast reinhard tonemap in rec2020
-    neg_color = pfe_2383.xyz_to_sens * rec2020_to_xyz * neg_color;
     glm::vec3 pos_color = virtual_paper(neg_color);
-    pos_color = xyz_to_rec709 * pfe_2383.dye_to_xyz * pos_color;
+    pos_color = rec2020_to_rec709 * pos_color;
     return glm::pow(clamp(pos_color, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));;
 }
 
@@ -145,9 +137,6 @@ void render_paper(tinydng::DNGImage& src)
         pos_color = glm::clamp(pos_color, 0.0f, 1.0f);
         frame_buffer[i] = encode(pos_color);
     }
-
-    black_point = glm::min(bp.r, glm::min(bp.g, bp.b));
-    white_point = glm::max(wp.r, glm::max(wp.g, wp.b));
 }
 
 std::string filename = "test-";
@@ -319,6 +308,7 @@ int main(int argc, char* argv[])
             c = sum.r;
             m = sum.g;
             y = sum.b;
+            contrats = 1.0f;
         }
         else
         {
@@ -362,11 +352,8 @@ int main(int argc, char* argv[])
             if(GetAsyncKeyState(VK_UP))   exposure /= inc;
             if(GetAsyncKeyState(VK_DOWN)) exposure *= inc;
 
-            if(GetAsyncKeyState(VK_LEFT)) gamma /= inc;
-            if(GetAsyncKeyState(VK_RIGHT)) gamma *= inc;
-
-            if(GetAsyncKeyState('Z')) black_point /= inc;
-            if(GetAsyncKeyState('X')) black_point *= inc;
+            if(GetAsyncKeyState(VK_LEFT)) contrats /= inc;
+            if(GetAsyncKeyState(VK_RIGHT)) contrats *= inc;
 
             if(GetAsyncKeyState(VK_ESCAPE)) return 0;
             if(GetAsyncKeyState(VK_RETURN))
