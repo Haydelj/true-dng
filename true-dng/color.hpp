@@ -67,7 +67,7 @@ const static glm::mat3 rec709_to_rec2020 = xyz_to_rec2020 * rec709_to_xyz;
 #include <string>
 #include <fstream>
 
-inline void load_from_csv(const std::string& file_path, std::vector<glm::vec2>& data, bool linearize = false)
+inline void load_from_csv(const std::string& file_path, std::vector<glm::vec2>& data, bool log_x = false)
 {
 	std::ifstream str(file_path);
 	if(!str.is_open())
@@ -81,11 +81,10 @@ inline void load_from_csv(const std::string& file_path, std::vector<glm::vec2>& 
 		str >> x;
 		str.get();
 		str >> y;
-		if(linearize)
-		{
-			x = powf(10.0, x);
-			y = powf(10.0, y);
-		}
+
+		if(log_x) x *= 2.30258509299f;
+		y *= 2.30258509299f;
+
 		data.emplace_back(x, y);
 	}
 
@@ -107,7 +106,7 @@ inline float sample(const std::vector<glm::vec2>& data, float x)
 	{
 		uint32_t middle = (start + end) / 2;
 		if(x >= data[middle].x) start = middle;
-		else                          end = middle;
+		else                    end = middle;
 	}
 
 	float blend = (x - data[start].x) / (data[start + 1].x - data[start].x);
@@ -169,9 +168,9 @@ struct PaperProfile
 			load_from_csv(path + "log_sensitivity_r.csv", r_sens);
 			load_from_csv(path + "log_sensitivity_g.csv", g_sens);
 			load_from_csv(path + "log_sensitivity_b.csv", b_sens);
-			load_from_csv(path + "density_curve_r.csv", r_curve);
-			load_from_csv(path + "density_curve_g.csv", g_curve);
-			load_from_csv(path + "density_curve_b.csv", b_curve);
+			load_from_csv(path + "density_curve_r.csv", r_curve, true);
+			load_from_csv(path + "density_curve_g.csv", g_curve, true);
+			load_from_csv(path + "density_curve_b.csv", b_curve, true);
 			load_from_csv(path + "dye_density_c.csv", c_dye);
 			load_from_csv(path + "dye_density_m.csv", m_dye);
 			load_from_csv(path + "dye_density_y.csv", y_dye);
@@ -180,9 +179,9 @@ struct PaperProfile
 				glm::vec3 rc(0.0f), gc(0.0f), bc(0.0f);
 				for(uint32_t i = 360; i < 830; ++i)
 				{
-					rc += powf(10.0f, sample(r_sens, i)) * cie_xyz_bar[i];
-					gc += powf(10.0f, sample(g_sens, i)) * cie_xyz_bar[i];
-					bc += powf(10.0f, sample(b_sens, i)) * cie_xyz_bar[i];
+					rc += glm::exp(sample(r_sens, i)) * cie_xyz_bar[i];
+					gc += glm::exp(sample(g_sens, i)) * cie_xyz_bar[i];
+					bc += glm::exp(sample(b_sens, i)) * cie_xyz_bar[i];
 				}
 
 				glm::vec3 ab = glm::inverse(glm::mat3(rc, gc, bc)) * d65_xyz;
@@ -196,9 +195,9 @@ struct PaperProfile
 				glm::vec3 rc(0.0f), gc(0.0f), bc(0.0f);
 				for(uint32_t i = 360; i < 830; ++i)
 				{
-					rc += d65[i] * powf(10.0, sample(c_dye, i)) * cie_xyz_bar[i];
-					gc += d65[i] * powf(10.0, sample(m_dye, i)) * cie_xyz_bar[i];
-					bc += d65[i] * powf(10.0, sample(y_dye, i)) * cie_xyz_bar[i];
+					rc += d65[i] * exp(sample(c_dye, i)) * cie_xyz_bar[i];
+					gc += d65[i] * exp(sample(m_dye, i)) * cie_xyz_bar[i];
+					bc += d65[i] * exp(sample(y_dye, i)) * cie_xyz_bar[i];
 				}
 
 				glm::vec3 ab = glm::inverse(glm::mat3(rc, gc, bc)) * d65_xyz;
@@ -209,30 +208,36 @@ struct PaperProfile
 			}
 
 			{
-				const float min = glm::min(glm::min(r_curve.front().y, g_curve.front().y), b_curve.front().y);
-				const float max = glm::max(glm::max(r_curve.back().y, g_curve.back().y), b_curve.back().y);
-				for(uint32_t i = 0; i < r_curve.size(); ++i) r_curve[i].y -= min;
-				for(uint32_t i = 0; i < g_curve.size(); ++i) g_curve[i].y -= min;
-				for(uint32_t i = 0; i < b_curve.size(); ++i) b_curve[i].y -= min;
+				float min = glm::min(glm::min(r_curve.front().y, g_curve.front().y), b_curve.front().y);
+				float max = glm::max(glm::max(r_curve.back().y, g_curve.back().y), b_curve.back().y);
+				max -= min;
+				for(uint32_t i = 0; i < r_curve.size(); ++i)
+				{
+					r_curve[i].y -= min;
+					//r_curve[i].y *= (12.0 / max);
+				}
+				for(uint32_t i = 0; i < g_curve.size(); ++i)
+				{
+					g_curve[i].y -= min;
+					//g_curve[i].y *= (12.0 / max);
+				}
+				for(uint32_t i = 0; i < b_curve.size(); ++i)
+				{
+					b_curve[i].y -= min;
+					///b_curve[i].y *= (12.0 / max);
+				}
 				printf("%f, %f\n", min, max);
 			}
 
 			//white blance curves
 			{
-				float r18 = inverse_sample(r_curve, log10(1.0f / 0.18)) - log10(0.18f);
-				float g18 = inverse_sample(g_curve, log10(1.0f / 0.18)) - log10(0.18f);
-				float b18 = inverse_sample(b_curve, log10(1.0f / 0.18)) - log10(0.18f);
-
-				for(uint32_t i = 0; i < r_curve.size(); ++i)
-					r_curve[i].x -= r18;
-
-				for(uint32_t i = 0; i < g_curve.size(); ++i)
-					g_curve[i].x -= g18;
-
-				for(uint32_t i = 0; i < b_curve.size(); ++i)
-					b_curve[i].x -= b18;
-
-				printf("%f, %f, %f\n", powf(10.0f, -sample(r_curve, log10(0.18f))), powf(10.0f, -sample(g_curve, log10(0.18f))), powf(10.0f, -sample(g_curve, log10(0.18f))));
+				float r18 = inverse_sample(r_curve, glm::log(1.0f / 0.18)) - glm::log(0.18f);
+				float g18 = inverse_sample(g_curve, glm::log(1.0f / 0.18)) - glm::log(0.18f);
+				float b18 = inverse_sample(b_curve, glm::log(1.0f / 0.18)) - glm::log(0.18f);
+				for(uint32_t i = 0; i < r_curve.size(); ++i) r_curve[i].x -= r18;
+				for(uint32_t i = 0; i < g_curve.size(); ++i) g_curve[i].x -= g18;
+				for(uint32_t i = 0; i < b_curve.size(); ++i) b_curve[i].x -= b18;
+				printf("%f, %f, %f\n", glm::exp(-sample(r_curve, glm::log(0.18f))), glm::exp(-sample(g_curve, glm::log(0.18f))), glm::exp(-sample(b_curve, glm::log(0.18f))));
 			}
 		}
 	}

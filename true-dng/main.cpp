@@ -27,16 +27,17 @@ static DEVMODE screenSettings = {{ 0 }, 0, 0, 156, 0, 0x001c0000, { 0 }, 0, 0, 0
 static bool big_endian = false;
 
 static PaperProfile endura("./data/paper/kodak_endura_premier/");
-static PaperProfile ektacolor("./data/paper/kodak_ektacolor_edge/");
-static PaperProfile ultra("./data/paper/kodak_ultra_endura/");
-static PaperProfile portra("./data/paper/kodak_portra_endura/");
-
 static PaperProfile pfe_2383("./data/paper/kodak_2383/");
-static PaperProfile pfe_2393("./data/paper/kodak_2393/");
+
+//static PaperProfile ektacolor("./data/paper/kodak_ektacolor_edge/");
+//static PaperProfile ultra("./data/paper/kodak_ultra_endura/");
+//static PaperProfile portra("./data/paper/kodak_portra_endura/");
+//static PaperProfile pfe_2393("./data/paper/kodak_2393/");
 
 static FilmProfile film("./data/film/negative/generic_a/");
 
 uint32_t paper_model = 1;
+static bool monochrome = false;
 
 glm::mat3 film_to_paper;
 
@@ -45,8 +46,9 @@ glm::mat3 forward_matrix(
     glm::vec3(0.13847, 0.57034, 0.00000),
     glm::vec3(0.19788, 0.01196, 0.84502));
 
+float dc = 1.0f;
 float c = 1.0f, m = 1.0f, y = 1.0;
-float contrats = 1.0, exposure = 1.0f;
+float contrast = dc, exposure = 1.0f;
 uint32_t vp_xres = 1, vp_yres = 1;
 glm::vec3 negative[64 * 1024 * 1024];
 
@@ -54,39 +56,49 @@ glm::vec3 cyan(1.0, 0.0f, 0.0f);
 glm::vec3 magenta(0.0, 1.0f, 0.0f);
 glm::vec3 yellow(0.0, 0.0f, 1.0f);
 
-uint32_t histogram[1024];
-
-inline void write_histo(glm::vec3& color)
-{
-    float value = (color.x + color.y + color.z) / 3.0f;
-    float log_exp = glm::log2(value / 0.18f);
-    uint32_t index = log_exp * 8 + 512;
-    if(index > 0) index = 512;
-    histogram[index]++;
-}
-
 static glm::vec3 vp_tonemap_old(glm::vec3 neg_color)
 {
-    float temp = contrats + 0.5f;
+    float temp = contrast + 0.5f;
     glm::vec3 out = glm::pow(neg_color, glm::vec3(temp)) * glm::pow(0.18f, 1.0f - temp);
     out = glm::tanh(glm::log(0.0324f / out) + 0.96f) * 0.5f + 0.5f;
     return rec2020_to_rec709 * out;
 }
 
+constexpr float log_grey = -1.71479842809f;
+
+static glm::vec3 to_log(glm::vec3 lin)
+{
+    return glm::log(lin) - log_grey;
+}
+
+static glm::vec3 to_lin(glm::vec3 log)
+{
+    return glm::exp(log + log_grey);
+}
+
+static glm::vec3 symetric_filmic_saturator(const glm::vec3& log_in)
+{
+    constexpr float dmax = 12.0f;
+    glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f);
+    float grey = atanh(2.0f * log_grey / dmax + 1.0f);
+    out = -tanh(out - grey) * 0.5f - 0.5f;
+    return out * dmax - log_grey;
+}
+
 static glm::vec3 vp_tonemap(glm::vec3 neg_color)
 {
-    glm::vec3 out = glm::pow(neg_color, glm::vec3(contrats)) * glm::pow(0.18f, 1.0f - contrats);
-    out = exp(-(glm::tanh(glm::log(out) + 1.06f) + 1.0f) * 4.0f);
-    return rec2020_to_rec709 * out;
+    glm::vec3 out = to_log(neg_color) * contrast;
+    out = symetric_filmic_saturator(out);
+    return rec2020_to_rec709 * to_lin(out);
 }
 
 static glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in)
 {
     glm::vec3 out = paper.xyz_to_sens * rec2020_to_xyz * in;
-    out = glm::pow(out, glm::vec3(contrats)) * glm::pow(0.18f, 1.0f - contrats);
-    out.x = pow(10.0f, -sample(paper.r_curve, log10(out.x)));
-    out.y = pow(10.0f, -sample(paper.g_curve, log10(out.y)));
-    out.z = pow(10.0f, -sample(paper.b_curve, log10(out.z)));
+    out = glm::log(out);
+    out = (out - log_grey) * contrast + log_grey;
+    out = -glm::vec3(sample(paper.r_curve, out.r), sample(paper.g_curve, out.g), sample(paper.b_curve, out.b));
+    out = glm::exp(out);
     return xyz_to_rec709 * paper.dye_to_xyz * out;
 }
 
@@ -97,6 +109,7 @@ glm::vec3 tonemap(glm::vec3 neg_color)
     else if(paper_model == 2) pos_color = paper_tonemap(endura, neg_color);
     else if(paper_model == 3) pos_color = paper_tonemap(pfe_2383, neg_color);
     else if(paper_model == 4) pos_color = vp_tonemap_old(neg_color);
+    if(monochrome) pos_color = glm::vec3(pos_color.g);
     return glm::pow(clamp(pos_color, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));;
 }
 
@@ -242,7 +255,8 @@ int main(int argc, char* argv[])
 {
 
     //film_to_paper = coupling_matrix(film, paper);
-    printf("%f\n", vp_tonemap(glm::vec3(0.18f)).r);
+    glm::vec3 grey = vp_tonemap(glm::vec3(0.18f));
+    printf("%f, %f, %f\n", grey.x, grey.y, grey.z);
     printf("%f\n", vp_tonemap_old(glm::vec3(0.18f)).r);
     cyan = rec709_to_xyz * cyan;
     yellow = rec709_to_xyz * yellow;
@@ -294,18 +308,18 @@ int main(int argc, char* argv[])
             for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
             {
                 uint16_t* data = ((uint16_t*)images[0].data.data()) + i * 3;
-                negative[i] = glm::vec3(data[0], data[1], data[2]) / glm::vec3(65535.0f);
+                negative[i] = glm::vec3(data[0], data[1], data[2]) / glm::vec3(65535.0f) * 2.0f;
                 negative[i] = xyz_to_rec2020 * forward_matrix * negative[i];
             }
-
-            ///contrats = 1.0f;
         }
         else
         {
+            monochrome = true;
+            contrast = dc = 0.7f;
             for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
             {
                 uint16_t* data = ((uint16_t*)images[0].data.data()) + i;
-                negative[i] = glm::vec3(data[0]) / glm::vec3(65535.0f);
+                negative[i] = glm::vec3(data[0]) / glm::vec3(65535.0f) * 2.0f;
             }
         }
 
@@ -329,6 +343,8 @@ int main(int argc, char* argv[])
                 c = sum.r;
                 m = sum.g;
                 y = sum.b;
+                contrast = dc;
+                exposure = 1.0f;
             }
 
             float inc = 1.01;
@@ -350,8 +366,8 @@ int main(int argc, char* argv[])
             if(GetAsyncKeyState(VK_UP))   exposure /= inc;
             if(GetAsyncKeyState(VK_DOWN)) exposure *= inc;
 
-            if(GetAsyncKeyState(VK_LEFT)) contrats /= inc;
-            if(GetAsyncKeyState(VK_RIGHT)) contrats *= inc;
+            if(GetAsyncKeyState(VK_LEFT)) contrast /= inc;
+            if(GetAsyncKeyState(VK_RIGHT)) contrast *= inc;
 
             if(GetAsyncKeyState(VK_ESCAPE)) return 0;
             if(GetAsyncKeyState(VK_RETURN))
