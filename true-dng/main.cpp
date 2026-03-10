@@ -27,16 +27,16 @@ static DEVMODE screenSettings = {{ 0 }, 0, 0, 156, 0, 0x001c0000, { 0 }, 0, 0, 0
 static bool big_endian = false;
 
 static PaperProfile endura("./data/paper/kodak_endura_premier/");
-static PaperProfile portra("./data/paper/kodak_portra_endura/");
-static PaperProfile ultra("./data/paper/kodak_ultra_endura/");
 static PaperProfile ektacolor("./data/paper/kodak_ektacolor_edge/");
+static PaperProfile ultra("./data/paper/kodak_ultra_endura/");
+static PaperProfile portra("./data/paper/kodak_portra_endura/");
 
 static PaperProfile pfe_2383("./data/paper/kodak_2383/");
 static PaperProfile pfe_2393("./data/paper/kodak_2393/");
 
 static FilmProfile film("./data/film/negative/generic_a/");
 
-uint32_t paper_model = 0.0;
+uint32_t paper_model = 1;
 
 glm::mat3 film_to_paper;
 
@@ -65,44 +65,38 @@ inline void write_histo(glm::vec3& color)
     histogram[index]++;
 }
 
-static glm::vec3 virtual_paper(glm::vec3 neg_color)
+static glm::vec3 vp_tonemap_old(glm::vec3 neg_color)
 {
-    glm::vec3 out = 0.01f / neg_color;
-    out = glm::pow(out, glm::vec3(contrats + 1.0f)) * glm::pow(0.18f, -contrats);
-    out = glm::log(out);
-    out = glm::tanh(out) * 0.5f + 0.5f;
-    return out;
+    float temp = contrats + 0.5f;
+    glm::vec3 out = glm::pow(neg_color, glm::vec3(temp)) * glm::pow(0.18f, 1.0f - temp);
+    out = glm::tanh(glm::log(0.0324f / out) + 0.96f) * 0.5f + 0.5f;
+    return rec2020_to_rec709 * out;
+}
+
+static glm::vec3 vp_tonemap(glm::vec3 neg_color)
+{
+    glm::vec3 out = glm::pow(neg_color, glm::vec3(contrats)) * glm::pow(0.18f, 1.0f - contrats);
+    out = exp(-(glm::tanh(glm::log(out) + 1.06f) + 1.0f) * 4.0f);
+    return rec2020_to_rec709 * out;
 }
 
 static glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in)
 {
-    const float bp = 1.0f / glm::max(glm::max(paper.r_curve.back().y, paper.g_curve.back().y), paper.b_curve.back().y);
-    const float wp = 1.0f / glm::min(glm::min(paper.r_curve.front().y, paper.g_curve.front().y), paper.b_curve.front().y);
-
     glm::vec3 out = paper.xyz_to_sens * rec2020_to_xyz * in;
-    out.x = 1.0 / sample(paper.r_curve, out.x);
-    out.y = 1.0 / sample(paper.g_curve, out.y);
-    out.z = 1.0 / sample(paper.b_curve, out.z);
-
-    out = out / wp;
-
-    out = xyz_to_rec709 * paper.dye_to_xyz * out;
-    out = clamp(out, 0.0f, 1.0f);
-    return glm::pow(out, glm::vec3(1.0 / 2.2f));
+    out = glm::pow(out, glm::vec3(contrats)) * glm::pow(0.18f, 1.0f - contrats);
+    out.x = pow(10.0f, -sample(paper.r_curve, log10(out.x)));
+    out.y = pow(10.0f, -sample(paper.g_curve, log10(out.y)));
+    out.z = pow(10.0f, -sample(paper.b_curve, log10(out.z)));
+    return xyz_to_rec709 * paper.dye_to_xyz * out;
 }
 
 glm::vec3 tonemap(glm::vec3 neg_color)
 {
-         if(paper_model == 1) return paper_tonemap(endura, neg_color);
-    else if(paper_model == 2) return paper_tonemap(portra, neg_color);
-    else if(paper_model == 3) return paper_tonemap(ultra, neg_color);
-    else if(paper_model == 4) return paper_tonemap(ektacolor, neg_color);
-    else if(paper_model == 5) return paper_tonemap(pfe_2383, neg_color);
-    else if(paper_model == 6) return paper_tonemap(pfe_2393, neg_color);
-
-    //variable contrast reinhard tonemap in rec2020
-    glm::vec3 pos_color = virtual_paper(neg_color);
-    pos_color = rec2020_to_rec709 * pos_color;
+    glm::vec3 pos_color = rec2020_to_rec709 * neg_color;
+    if(paper_model == 1) pos_color = vp_tonemap(neg_color);
+    else if(paper_model == 2) pos_color = paper_tonemap(endura, neg_color);
+    else if(paper_model == 3) pos_color = paper_tonemap(pfe_2383, neg_color);
+    else if(paper_model == 4) pos_color = vp_tonemap_old(neg_color);
     return glm::pow(clamp(pos_color, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));;
 }
 
@@ -248,6 +242,8 @@ int main(int argc, char* argv[])
 {
 
     //film_to_paper = coupling_matrix(film, paper);
+    printf("%f\n", vp_tonemap(glm::vec3(0.18f)).r);
+    printf("%f\n", vp_tonemap_old(glm::vec3(0.18f)).r);
     cyan = rec709_to_xyz * cyan;
     yellow = rec709_to_xyz * yellow;
     magenta = rec709_to_xyz * magenta;
@@ -295,20 +291,14 @@ int main(int argc, char* argv[])
             forward_matrix[1] *= scale.y;
             forward_matrix[2] *= scale.z;
 
-            glm::vec3 sum(0.0f);
             for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
             {
                 uint16_t* data = ((uint16_t*)images[0].data.data()) + i * 3;
                 negative[i] = glm::vec3(data[0], data[1], data[2]) / glm::vec3(65535.0f);
                 negative[i] = xyz_to_rec2020 * forward_matrix * negative[i];
-                sum += 1.0f / negative[i];
             }
 
-            sum /= sum.g;
-            c = sum.r;
-            m = sum.g;
-            y = sum.b;
-            contrats = 1.0f;
+            ///contrats = 1.0f;
         }
         else
         {
@@ -318,8 +308,6 @@ int main(int argc, char* argv[])
                 negative[i] = glm::vec3(data[0]) / glm::vec3(65535.0f);
             }
         }
-
-
 
         do
         {
@@ -331,16 +319,26 @@ int main(int argc, char* argv[])
             SetDIBitsToDevice(hdc, 0, 0, XRES, YRES, 0, 0, 0, YRES, frame_buffer, &bmi, DIB_RGB_COLORS);
             Sleep(16);
 
+            if(GetAsyncKeyState('X'))
+            {
+                glm::vec3 sum(0.0f);
+                for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
+                    sum += 1.0f / negative[i];
+
+                sum /= sum.g;
+                c = sum.r;
+                m = sum.g;
+                y = sum.b;
+            }
+
             float inc = 1.01;
-            if(GetAsyncKeyState('0')) paper_model = 0;
             if(GetAsyncKeyState('1')) paper_model = 1;
             if(GetAsyncKeyState('2')) paper_model = 2;
             if(GetAsyncKeyState('3')) paper_model = 3;
             if(GetAsyncKeyState('4')) paper_model = 4;
-            if(GetAsyncKeyState('5')) paper_model = 5;
-            if(GetAsyncKeyState('6')) paper_model = 6;
+            if(GetAsyncKeyState('0')) paper_model = 7;
 
-            if(GetAsyncKeyState(VK_SHIFT)) inc = 1.10;
+            if(GetAsyncKeyState(VK_SHIFT)) inc = 1.05;
 
             if(GetAsyncKeyState('Q')) c *= inc;
             if(GetAsyncKeyState('A')) c /= inc;
@@ -366,6 +364,7 @@ int main(int argc, char* argv[])
         while(true);
     } 
     while(true);
+
 
     return 0;
 }

@@ -169,9 +169,9 @@ struct PaperProfile
 			load_from_csv(path + "log_sensitivity_r.csv", r_sens);
 			load_from_csv(path + "log_sensitivity_g.csv", g_sens);
 			load_from_csv(path + "log_sensitivity_b.csv", b_sens);
-			load_from_csv(path + "density_curve_r.csv", r_curve, true);
-			load_from_csv(path + "density_curve_g.csv", g_curve, true);
-			load_from_csv(path + "density_curve_b.csv", b_curve, true);
+			load_from_csv(path + "density_curve_r.csv", r_curve);
+			load_from_csv(path + "density_curve_g.csv", g_curve);
+			load_from_csv(path + "density_curve_b.csv", b_curve);
 			load_from_csv(path + "dye_density_c.csv", c_dye);
 			load_from_csv(path + "dye_density_m.csv", m_dye);
 			load_from_csv(path + "dye_density_y.csv", y_dye);
@@ -208,22 +208,31 @@ struct PaperProfile
 				xyz_to_dye = glm::inverse(dye_to_xyz);
 			}
 
+			{
+				const float min = glm::min(glm::min(r_curve.front().y, g_curve.front().y), b_curve.front().y);
+				const float max = glm::max(glm::max(r_curve.back().y, g_curve.back().y), b_curve.back().y);
+				for(uint32_t i = 0; i < r_curve.size(); ++i) r_curve[i].y -= min;
+				for(uint32_t i = 0; i < g_curve.size(); ++i) g_curve[i].y -= min;
+				for(uint32_t i = 0; i < b_curve.size(); ++i) b_curve[i].y -= min;
+				printf("%f, %f\n", min, max);
+			}
+
 			//white blance curves
 			{
-				float r18 = 0.18f / inverse_sample(r_curve, 1.0f / 0.18);
-				float g18 = 0.18f / inverse_sample(g_curve, 1.0f / 0.18);
-				float b18 = 0.18f / inverse_sample(b_curve, 1.0f / 0.18);
+				float r18 = inverse_sample(r_curve, log10(1.0f / 0.18)) - log10(0.18f);
+				float g18 = inverse_sample(g_curve, log10(1.0f / 0.18)) - log10(0.18f);
+				float b18 = inverse_sample(b_curve, log10(1.0f / 0.18)) - log10(0.18f);
 
 				for(uint32_t i = 0; i < r_curve.size(); ++i)
-					r_curve[i].x *= r18;
+					r_curve[i].x -= r18;
 
 				for(uint32_t i = 0; i < g_curve.size(); ++i)
-					g_curve[i].x *= g18;
+					g_curve[i].x -= g18;
 
 				for(uint32_t i = 0; i < b_curve.size(); ++i)
-					b_curve[i].x *= b18;
+					b_curve[i].x -= b18;
 
-				printf("%f, %f, %f\n", 1.0f / sample(r_curve, 0.18f), 1.0f / sample(g_curve, 0.18f), 1.0f / sample(b_curve, 0.18f));
+				printf("%f, %f, %f\n", powf(10.0f, -sample(r_curve, log10(0.18f))), powf(10.0f, -sample(g_curve, log10(0.18f))), powf(10.0f, -sample(g_curve, log10(0.18f))));
 			}
 		}
 	}
