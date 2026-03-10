@@ -73,13 +73,12 @@ static glm::vec3 invert(glm::vec3 neg_color, float g)
     return glm::pow(pos_color, glm::vec3(g)) * glm::pow(0.18f, 1.0f - g);
 }
 
-static glm::vec3 reinhard(glm::vec3 in)
+static glm::vec3 virtual_paper(glm::vec3 neg_color)
 {
-    const glm::vec3 bp = glm::pow(glm::vec3(16, 19, 21) / 255.0f, glm::vec3(2.2));
-    const glm::vec3 wp(1.00, 1.0, 1.0);
-
-    glm::vec3 out = in / (in + 1.0f);
-    return (out + bp) * (wp - bp);
+    glm::vec3 out = invert(neg_color, gamma);
+    out = glm::log(out);
+    out = glm::tanh(out) * 0.5f + 0.5f;
+    return out;
 }
 
 static glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in)
@@ -109,13 +108,10 @@ glm::vec3 tonemap(glm::vec3 neg_color)
     else if(paper_model == 6) return paper_tonemap(pfe_2393, neg_color);
 
     //variable contrast reinhard tonemap in rec2020
-    neg_color = endura.xyz_to_sens * rec2020_to_xyz * neg_color;
-    glm::vec3 pos_color = invert(neg_color, gamma);
-    pos_color = reinhard(pos_color);
-    pos_color = xyz_to_rec709 * endura.dye_to_xyz * pos_color;
-    pos_color = clamp(pos_color, 0.0f, 1.0f);
-    pos_color = glm::pow(pos_color, glm::vec3(1.0f / 2.2f));
-    return pos_color;
+    neg_color = pfe_2383.xyz_to_sens * rec2020_to_xyz * neg_color;
+    glm::vec3 pos_color = virtual_paper(neg_color);
+    pos_color = xyz_to_rec709 * pfe_2383.dye_to_xyz * pos_color;
+    return glm::pow(clamp(pos_color, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));;
 }
 
 inline uint32_t encode(const glm::vec3& in)
@@ -216,12 +212,12 @@ static void write_image(tinydng::DNGImage& src)
             {
                 glm::vec3 neg_color = negative[i] * glm::vec3(c, m, y) * exposure;
 
-                glm::vec3 raw_out = invert(neg_color, gamma - 1.5f);
-                raw_out = rec2020_to_xyz * raw_out;
-                raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
-                raw_data[i * 3 + 0] = (uint16_t)(raw_out.r * 0xffff + 0.5f);
-                raw_data[i * 3 + 1] = (uint16_t)(raw_out.g * 0xffff + 0.5f);
-                raw_data[i * 3 + 2] = (uint16_t)(raw_out.b * 0xffff + 0.5f);
+                //glm::vec3 raw_out = invert(neg_color, gamma - 1.5f);
+                //raw_out = rec2020_to_xyz * raw_out;
+                //raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
+                //raw_data[i * 3 + 0] = (uint16_t)(raw_out.r * 0xffff + 0.5f);
+                //raw_data[i * 3 + 1] = (uint16_t)(raw_out.g * 0xffff + 0.5f);
+                //raw_data[i * 3 + 2] = (uint16_t)(raw_out.b * 0xffff + 0.5f);
 
                 glm::vec3 png_out = tonemap(neg_color);
                 png_data[i * 3 + 0] = (uint8_t)(png_out.r * 0xff + 0.5f);
@@ -233,15 +229,20 @@ static void write_image(tinydng::DNGImage& src)
     }
     else
     {
-        for(uint32_t i = 0; i < raw_data.size(); ++i)
+        tbb::parallel_for(tbb::blocked_range<int>(0, src.width * src.height), [&](tbb::blocked_range<int> r)
         {
-            float raw_out = 0.01f / negative[i].r;
-            raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
-            raw_data[i] = (uint16_t)(raw_out * 0xffff + 0.5f);
+            for(uint32_t i = r.begin(); i < r.end(); ++i)
+            {
+                glm::vec3 neg_color = negative[i] * exposure;
 
-            float png_out = tonemap(negative[i]).r;
-            png_data[i] = (uint8_t)(png_out * 0xff + 0.5f);
-        }
+                //float raw_out = 0.01f / neg_color;
+                //raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
+                //raw_data[i] = (uint16_t)(raw_out * 0xffff + 0.5f);
+
+                float png_out = tonemap(neg_color).r;
+                png_data[i] = (uint8_t)(png_out * 0xff + 0.5f);
+            }
+        });
         dng_image.SetImageData((uint8_t*)raw_data.data(), raw_data.size() * 2);
     }
 
@@ -249,9 +250,9 @@ static void write_image(tinydng::DNGImage& src)
     std::string err;
     tinydngwriter::DNGWriter dng_writer(big_endian);
     dng_writer.AddImage(&dng_image);
-    dng_writer.WriteToFile(("output/dngs/" + filename + ".dng").c_str(), &err);
+    //dng_writer.WriteToFile(("output/dngs/" + filename + ".dng").c_str(), &err);
 
-    stbi_write_jpg(("output/jpgs/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
+    stbi_write_jpg(("output/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
 }
 
 int main(int argc, char* argv[])
@@ -289,23 +290,23 @@ int main(int argc, char* argv[])
             return 0;
         }
 
-        glm::mat3 cc;
-        for(uint32_t i = 0; i < 3; ++i)
-            for(uint32_t j = 0; j < 3; ++j)
-            {
-                cc[j][i] = images[1].color_matrix1[i][j];
-            }
-
-        forward_matrix = glm::inverse(cc);
-        glm::mat3 inv = glm::inverse(forward_matrix);
-        glm::vec3 scale = inv * d65_xyz;
-        forward_matrix[0] *= scale.x;
-        forward_matrix[1] *= scale.y;
-        forward_matrix[2] *= scale.z;
-
-        glm::vec3 sum(0.0f);
         if(images[0].samples_per_pixel == 3)
         {
+            glm::mat3 cc;
+            for(uint32_t i = 0; i < 3; ++i)
+                for(uint32_t j = 0; j < 3; ++j)
+                {
+                    cc[j][i] = images[1].color_matrix1[i][j];
+                }
+
+            forward_matrix = glm::inverse(cc);
+            glm::mat3 inv = glm::inverse(forward_matrix);
+            glm::vec3 scale = inv * d65_xyz;
+            forward_matrix[0] *= scale.x;
+            forward_matrix[1] *= scale.y;
+            forward_matrix[2] *= scale.z;
+
+            glm::vec3 sum(0.0f);
             for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
             {
                 uint16_t* data = ((uint16_t*)images[0].data.data()) + i * 3;
@@ -313,6 +314,11 @@ int main(int argc, char* argv[])
                 negative[i] = xyz_to_rec2020 * forward_matrix * negative[i];
                 sum += 1.0f / negative[i];
             }
+
+            sum /= sum.g;
+            c = sum.r;
+            m = sum.g;
+            y = sum.b;
         }
         else
         {
@@ -323,10 +329,7 @@ int main(int argc, char* argv[])
             }
         }
 
-        sum /= sum.g;
-        c = sum.r;
-        m = sum.g;
-        y = sum.b;
+
 
         do
         {
