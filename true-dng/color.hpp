@@ -211,21 +211,9 @@ struct PaperProfile
 				float min = glm::min(glm::min(r_curve.front().y, g_curve.front().y), b_curve.front().y);
 				float max = glm::max(glm::max(r_curve.back().y, g_curve.back().y), b_curve.back().y);
 				max -= min;
-				for(uint32_t i = 0; i < r_curve.size(); ++i)
-				{
-					r_curve[i].y -= min;
-					//r_curve[i].y *= (12.0 / max);
-				}
-				for(uint32_t i = 0; i < g_curve.size(); ++i)
-				{
-					g_curve[i].y -= min;
-					//g_curve[i].y *= (12.0 / max);
-				}
-				for(uint32_t i = 0; i < b_curve.size(); ++i)
-				{
-					b_curve[i].y -= min;
-					///b_curve[i].y *= (12.0 / max);
-				}
+				for(uint32_t i = 0; i < r_curve.size(); ++i) r_curve[i].y -= min; 
+				for(uint32_t i = 0; i < g_curve.size(); ++i) g_curve[i].y -= min;
+				for(uint32_t i = 0; i < b_curve.size(); ++i) b_curve[i].y -= min;
 				printf("%f, %f\n", min, max);
 			}
 
@@ -298,3 +286,42 @@ inline glm::mat3 coupling_matrix(FilmProfile& film, PaperProfile& paper)
 
 	return glm::mat3(c0, c1, c2);
 }
+
+constexpr float log_grey = -1.71479842809f;
+
+inline glm::vec3 to_log(glm::vec3 lin)
+{
+	return glm::log(lin) - log_grey;
+}
+
+inline glm::vec3 to_lin(glm::vec3 log)
+{
+	return glm::exp(log + log_grey);
+}
+
+inline glm::vec3 symetric_filmic_saturator(const glm::vec3& log_in)
+{
+	constexpr float dmax = 12.0f;
+	const float grey = atanh(2.0f * log_grey / dmax + 1.0f);
+	glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f);
+	out = -tanh(out - grey) * 0.5f - 0.5f;
+	return out * dmax - log_grey;
+}
+
+inline glm::vec3 vp_tonemap(const glm::vec3& neg_color, float contrast = 1.0f)
+{
+	glm::vec3 out = to_log(neg_color) * contrast;
+	out = symetric_filmic_saturator(out);
+	return rec2020_to_rec709 * to_lin(out);
+}
+
+inline glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in, float contrast = 1.0f)
+{
+	glm::vec3 out = paper.xyz_to_sens * rec2020_to_xyz * in;
+	out = glm::log(out);
+	out = (out - log_grey) * contrast + log_grey;
+	out = -glm::vec3(sample(paper.r_curve, out.r), sample(paper.g_curve, out.g), sample(paper.b_curve, out.b));
+	out = glm::exp(out);
+	return xyz_to_rec709 * paper.dye_to_xyz * out;
+}
+

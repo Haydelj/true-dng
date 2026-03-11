@@ -28,11 +28,11 @@ static bool big_endian = false;
 
 static PaperProfile endura("./data/paper/kodak_endura_premier/");
 static PaperProfile pfe_2383("./data/paper/kodak_2383/");
+static PaperProfile pfe_2393("./data/paper/kodak_2393/");
 
 //static PaperProfile ektacolor("./data/paper/kodak_ektacolor_edge/");
 //static PaperProfile ultra("./data/paper/kodak_ultra_endura/");
 //static PaperProfile portra("./data/paper/kodak_portra_endura/");
-//static PaperProfile pfe_2393("./data/paper/kodak_2393/");
 
 static FilmProfile film("./data/film/negative/generic_a/");
 
@@ -41,74 +41,18 @@ static bool monochrome = false;
 
 glm::mat3 film_to_paper;
 
-glm::mat3 forward_matrix(
-    glm::vec3(0.21921, 0.08772, 0.00000),
-    glm::vec3(0.13847, 0.57034, 0.00000),
-    glm::vec3(0.19788, 0.01196, 0.84502));
-
 float dc = 1.0f;
 float c = 1.0f, m = 1.0f, y = 1.0;
 float contrast = dc, exposure = 1.0f;
 uint32_t vp_xres = 1, vp_yres = 1;
 glm::vec3 negative[64 * 1024 * 1024];
 
-glm::vec3 cyan(1.0, 0.0f, 0.0f);
-glm::vec3 magenta(0.0, 1.0f, 0.0f);
-glm::vec3 yellow(0.0, 0.0f, 1.0f);
-
-static glm::vec3 vp_tonemap_old(glm::vec3 neg_color)
-{
-    float temp = contrast + 0.5f;
-    glm::vec3 out = glm::pow(neg_color, glm::vec3(temp)) * glm::pow(0.18f, 1.0f - temp);
-    out = glm::tanh(glm::log(0.0324f / out) + 0.96f) * 0.5f + 0.5f;
-    return rec2020_to_rec709 * out;
-}
-
-constexpr float log_grey = -1.71479842809f;
-
-static glm::vec3 to_log(glm::vec3 lin)
-{
-    return glm::log(lin) - log_grey;
-}
-
-static glm::vec3 to_lin(glm::vec3 log)
-{
-    return glm::exp(log + log_grey);
-}
-
-static glm::vec3 symetric_filmic_saturator(const glm::vec3& log_in)
-{
-    constexpr float dmax = 12.0f;
-    glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f);
-    float grey = atanh(2.0f * log_grey / dmax + 1.0f);
-    out = -tanh(out - grey) * 0.5f - 0.5f;
-    return out * dmax - log_grey;
-}
-
-static glm::vec3 vp_tonemap(glm::vec3 neg_color)
-{
-    glm::vec3 out = to_log(neg_color) * contrast;
-    out = symetric_filmic_saturator(out);
-    return rec2020_to_rec709 * to_lin(out);
-}
-
-static glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in)
-{
-    glm::vec3 out = paper.xyz_to_sens * rec2020_to_xyz * in;
-    out = glm::log(out);
-    out = (out - log_grey) * contrast + log_grey;
-    out = -glm::vec3(sample(paper.r_curve, out.r), sample(paper.g_curve, out.g), sample(paper.b_curve, out.b));
-    out = glm::exp(out);
-    return xyz_to_rec709 * paper.dye_to_xyz * out;
-}
-
 glm::vec3 tonemap(glm::vec3 neg_color)
 {
     glm::vec3 pos_color = rec2020_to_rec709 * neg_color;
-    if(paper_model == 1) pos_color = vp_tonemap(neg_color);
-    else if(paper_model == 2) pos_color = paper_tonemap(endura, neg_color);
-    else if(paper_model == 3) pos_color = paper_tonemap(pfe_2383, neg_color);
-    else if(paper_model == 4) pos_color = vp_tonemap_old(neg_color);
+    if(paper_model == 1) pos_color = vp_tonemap(neg_color, contrast);
+    else if(paper_model == 2) pos_color = paper_tonemap(endura, neg_color, contrast);
+    else if(paper_model == 3) pos_color = paper_tonemap(pfe_2383, neg_color, contrast);
     if(monochrome) pos_color = glm::vec3(pos_color.g);
     return glm::pow(clamp(pos_color, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));;
 }
@@ -122,10 +66,8 @@ inline uint32_t encode(const glm::vec3& in)
 }
 
 static uint32_t frame_buffer[XRES * YRES];
-void render_paper(tinydng::DNGImage& src)
+void render_preview(tinydng::DNGImage& src)
 {
-    glm::vec3 wp(0.0f);
-    glm::vec3 bp(1.0e6f);
     for(uint32_t i = 0; i < XRES * YRES; ++i)
     {
         glm::ivec2 fbc(i % XRES, i / XRES);
@@ -136,18 +78,12 @@ void render_paper(tinydng::DNGImage& src)
         uint32_t ni =  vpc.y * src.width + vpc.x ;
 
         glm::vec3 neg_color = negative[ni] * glm::vec3(c, m, y) * exposure;
-
-        wp = glm::max(wp, neg_color);
-        bp = glm::min(bp, neg_color);
-
         glm::vec3 pos_color = tonemap(neg_color);
-        pos_color = glm::clamp(pos_color, 0.0f, 1.0f);
         frame_buffer[i] = encode(pos_color);
     }
 }
 
-std::string filename = "test-";
-static void write_image(tinydng::DNGImage& src)
+static void save_image(tinydng::DNGImage& src, std::string filename)
 {
     tinydngwriter::DNGImage dng_image;
 	dng_image.SetBigEndian(big_endian);
@@ -235,7 +171,7 @@ static void write_image(tinydng::DNGImage& src)
                 //raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
                 //raw_data[i] = (uint16_t)(raw_out * 0xffff + 0.5f);
 
-                float png_out = tonemap(neg_color).r;
+                float png_out = tonemap(neg_color).g;
                 png_data[i] = (uint8_t)(png_out * 0xff + 0.5f);
             }
         });
@@ -257,10 +193,6 @@ int main(int argc, char* argv[])
     //film_to_paper = coupling_matrix(film, paper);
     glm::vec3 grey = vp_tonemap(glm::vec3(0.18f));
     printf("%f, %f, %f\n", grey.x, grey.y, grey.z);
-    printf("%f\n", vp_tonemap_old(glm::vec3(0.18f)).r);
-    cyan = rec709_to_xyz * cyan;
-    yellow = rec709_to_xyz * yellow;
-    magenta = rec709_to_xyz * magenta;
 
     RECT rect;
     GetClientRect(GetDesktopWindow(), &rect);
@@ -276,6 +208,7 @@ int main(int argc, char* argv[])
 
     do
     {
+        std::string filename = "test";
         if(argc > 1) filename = std::string(argv[1]);
         filename += std::to_string(frame);
 
@@ -298,7 +231,7 @@ int main(int argc, char* argv[])
                     cc[j][i] = images[1].color_matrix1[i][j];
                 }
 
-            forward_matrix = glm::inverse(cc);
+            glm::mat3 forward_matrix = glm::inverse(cc);
             glm::mat3 inv = glm::inverse(forward_matrix);
             glm::vec3 scale = inv * d65_xyz;
             forward_matrix[0] *= scale.x;
@@ -328,7 +261,7 @@ int main(int argc, char* argv[])
             static MSG dummy_message;
             PeekMessageA(&dummy_message, 0, 0, 0, 1);
 
-            render_paper(images[0]);
+            render_preview(images[0]);
 
             SetDIBitsToDevice(hdc, 0, 0, XRES, YRES, 0, 0, 0, YRES, frame_buffer, &bmi, DIB_RGB_COLORS);
             Sleep(16);
@@ -373,7 +306,7 @@ int main(int argc, char* argv[])
             if(GetAsyncKeyState(VK_RETURN))
             {
                 frame++;
-                write_image(images[0]);
+                save_image(images[0], filename);
                 break;
             }
         } 
