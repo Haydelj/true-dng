@@ -132,6 +132,46 @@ inline float inverse_sample(const std::vector<glm::vec2>& data, float y)
 	return glm::mix(data[start].x, data[start + 1].x, blend);
 }
 
+struct FilmProfile
+{
+	//dye couplers
+	std::vector<glm::vec2> c_dye;
+	std::vector<glm::vec2> m_dye;
+	std::vector<glm::vec2> y_dye;
+
+	glm::mat3 dye_to_xyz;
+	glm::mat3 xyz_to_dye;
+
+
+	FilmProfile(const std::string& path)
+	{
+		load_from_csv(path + "dye_density_c.csv", c_dye);
+		load_from_csv(path + "dye_density_m.csv", m_dye);
+		load_from_csv(path + "dye_density_y.csv", y_dye);
+
+		glm::vec3 rc(0.0f), gc(0.0f), bc(0.0f);
+		for(uint32_t i = 360; i < 830; ++i)
+		{
+			rc += d65[i] * powf(10.0, sample(c_dye, i)) * cie_xyz_bar[i];
+			gc += d65[i] * powf(10.0, sample(m_dye, i)) * cie_xyz_bar[i];
+			bc += d65[i] * powf(10.0, sample(y_dye, i)) * cie_xyz_bar[i];
+		}
+
+		glm::vec3 ab = glm::inverse(glm::mat3(rc, gc, bc)) * d65_xyz;
+		rc *= ab.x; gc *= ab.y; bc *= ab.z;
+
+		dye_to_xyz = glm::mat3(rc, gc, bc);
+		xyz_to_dye = glm::inverse(dye_to_xyz);
+
+	}
+};
+
+static FilmProfile film("./data/film/negative/generic_a/");
+
+struct PaperProfile;
+
+inline glm::mat3 coupling_matrix(const FilmProfile& film, const PaperProfile& paper);
+
 struct PaperProfile
 {
 	//spectral sensitivity
@@ -175,13 +215,21 @@ struct PaperProfile
 			load_from_csv(path + "dye_density_m.csv", m_dye);
 			load_from_csv(path + "dye_density_y.csv", y_dye);
 
+			r_sens.back().y = -1024.0f;
+			g_sens.back().y = -1024.0f;
+			b_sens.back().y = -1024.0f;
+
+			r_sens.front().y = -1024.0f;
+			g_sens.front().y = -1024.0f;
+			b_sens.front().y = -1024.0f;
+
 			{
 				glm::vec3 rc(0.0f), gc(0.0f), bc(0.0f);
 				for(uint32_t i = 360; i < 830; ++i)
 				{
-					rc += glm::exp(sample(r_sens, i)) * cie_xyz_bar[i];
-					gc += glm::exp(sample(g_sens, i)) * cie_xyz_bar[i];
-					bc += glm::exp(sample(b_sens, i)) * cie_xyz_bar[i];
+					rc += d65[i] * glm::exp(sample(r_sens, i)) * cie_xyz_bar[i];
+					gc += d65[i] * glm::exp(sample(g_sens, i)) * cie_xyz_bar[i];
+					bc += d65[i] * glm::exp(sample(b_sens, i)) * cie_xyz_bar[i];
 				}
 
 				glm::vec3 ab = glm::inverse(glm::mat3(rc, gc, bc)) * d65_xyz;
@@ -231,60 +279,50 @@ struct PaperProfile
 	}
 };
 
-struct FilmProfile
-{
-	//dye couplers
-	std::vector<glm::vec2> c_dye;
-	std::vector<glm::vec2> m_dye;
-	std::vector<glm::vec2> y_dye;
-
-	glm::mat3 dye_to_xyz;
-	glm::mat3 xyz_to_dye;
-
-	FilmProfile(const std::string& path)
-	{
-		load_from_csv(path + "dye_density_c.csv", c_dye);
-		load_from_csv(path + "dye_density_m.csv", m_dye);
-		load_from_csv(path + "dye_density_y.csv", y_dye);
-
-		glm::vec3 rc(0.0f), gc(0.0f), bc(0.0f);
-		for(uint32_t i = 360; i < 830; ++i)
-		{
-			rc += d65[i] * powf(10.0, sample(c_dye, i)) * cie_xyz_bar[i];
-			gc += d65[i] * powf(10.0, sample(m_dye, i)) * cie_xyz_bar[i];
-			bc += d65[i] * powf(10.0, sample(y_dye, i)) * cie_xyz_bar[i];
-		}
-
-		glm::vec3 ab = glm::inverse(glm::mat3(rc, gc, bc)) * d65_xyz;
-		rc *= ab.x; gc *= ab.y; bc *= ab.z;
-
-		dye_to_xyz = glm::mat3(rc, gc, bc);
-		xyz_to_dye = glm::inverse(dye_to_xyz);
-	}
-};
-
-inline glm::mat3 coupling_matrix(FilmProfile& film, PaperProfile& paper)
+inline glm::mat3 coupling_matrix(const FilmProfile& film, const PaperProfile& paper)
 {
 	glm::vec3 c0(0.0f), c1(0.0f), c2(0.0f);
+
+	printf("\nCyan\n");
+	for(uint32_t i = 600; i < 830; ++i)
+	{
+		float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f;
+		c0.x += t0 = d65[i] * glm::exp(sample(film.c_dye, i)) * glm::exp(sample(paper.r_sens, i));
+		c0.y += t1 = d65[i] * glm::exp(sample(film.c_dye, i)) * glm::exp(sample(paper.g_sens, i));
+		c0.z += t2 = d65[i] * glm::exp(sample(film.c_dye, i)) * glm::exp(sample(paper.b_sens, i));
+		printf("%f, %f, %f\n", t0, t1, t2);
+	}
+
+	printf("\Magenta\n");
 	for(uint32_t i = 360; i < 830; ++i)
 	{
-		c0.x += d65[i] * powf(10.0, sample(film.c_dye, i)) * powf(10.0, sample(paper.r_sens, i));
-		c0.y += d65[i] * powf(10.0, sample(film.c_dye, i)) * powf(10.0, sample(paper.g_sens, i));
-		c0.z += d65[i] * powf(10.0, sample(film.c_dye, i)) * powf(10.0, sample(paper.b_sens, i));
-
-		c1.x += d65[i] * powf(10.0, sample(film.m_dye, i)) * powf(10.0, sample(paper.r_sens, i));
-		c1.y += d65[i] * powf(10.0, sample(film.m_dye, i)) * powf(10.0, sample(paper.g_sens, i));
-		c1.z += d65[i] * powf(10.0, sample(film.m_dye, i)) * powf(10.0, sample(paper.b_sens, i));
-
-		c2.x += d65[i] * powf(10.0, sample(film.y_dye, i)) * powf(10.0, sample(paper.r_sens, i));
-		c2.y += d65[i] * powf(10.0, sample(film.y_dye, i)) * powf(10.0, sample(paper.g_sens, i));
-		c2.z += d65[i] * powf(10.0, sample(film.y_dye, i)) * powf(10.0, sample(paper.b_sens, i));
+		float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f;
+		c1.x += t0 = d65[i] * glm::exp(sample(film.m_dye, i)) * glm::exp(sample(paper.r_sens, i));
+		c1.y += t1 = d65[i] * glm::exp(sample(film.m_dye, i)) * glm::exp(sample(paper.g_sens, i));
+		c1.z += t2 = d65[i] * glm::exp(sample(film.m_dye, i)) * glm::exp(sample(paper.b_sens, i));
+		printf("%f, %f, %f\n", t0, t1, t2);
 	}
+
+	printf("\Yellow\n");
+	for(uint32_t i = 360; i < 830; ++i)
+	{
+		float t0 = 0.0f, t1 = 0.0f, t2 = 0.0f;
+		c2.x += t0 = d65[i] * glm::exp(sample(film.y_dye, i)) * glm::exp(sample(paper.r_sens, i));
+		c2.y += t1 = d65[i] * glm::exp(sample(film.y_dye, i)) * glm::exp(sample(paper.g_sens, i));
+		c2.z += t2 = d65[i] * glm::exp(sample(film.y_dye, i)) * glm::exp(sample(paper.b_sens, i));
+		printf("%f, %f, %f\n", t0, t1, t2);
+	}
+
+	//c0 = glm::normalize(c0);
+	//c1 = glm::normalize(c1);
+	//c2 = glm::normalize(c2);
 
 	glm::vec3 ab = glm::inverse(glm::mat3(c0, c1, c2)) * glm::vec3(1.0f);
 	c0 *= ab.x; c1 *= ab.y; c2 *= ab.z;
 
-	return glm::mat3(c0, c1, c2);
+	glm::mat3 dye_to_sense = glm::mat3(c0, c1, c2);
+	glm::mat3 sense_to_dye  = glm::inverse(dye_to_sense);
+	return dye_to_sense;
 }
 
 constexpr float log_grey = -1.71479842809f;
@@ -301,9 +339,10 @@ inline glm::vec3 to_lin(glm::vec3 log)
 
 inline glm::vec3 symetric_filmic_saturator(const glm::vec3& log_in)
 {
-	constexpr float dmax = 12.0f;
+	constexpr float dmax = 10.0f;
 	const float grey = atanh(2.0f * log_grey / dmax + 1.0f);
-	glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f);
+	glm::vec3 out = log_in * glm::vec3(1.0f, 1.0f, 1.0f); //neutral
+	//glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f); //vision 3 500t C41
 	out = -tanh(out - grey) * 0.5f - 0.5f;
 	return out * dmax - log_grey;
 }
@@ -312,16 +351,17 @@ inline glm::vec3 vp_tonemap(const glm::vec3& neg_color, float contrast = 1.0f)
 {
 	glm::vec3 out = to_log(neg_color) * contrast;
 	out = symetric_filmic_saturator(out);
-	return rec2020_to_rec709 * to_lin(out);
+	return to_lin(out);
 }
 
 inline glm::vec3 paper_tonemap(const PaperProfile& paper, const glm::vec3& in, float contrast = 1.0f)
 {
 	glm::vec3 out = paper.xyz_to_sens * rec2020_to_xyz * in;
+	//out = vp_tonemap(out, contrast);
 	out = glm::log(out);
 	out = (out - log_grey) * contrast + log_grey;
 	out = -glm::vec3(sample(paper.r_curve, out.r), sample(paper.g_curve, out.g), sample(paper.b_curve, out.b));
 	out = glm::exp(out);
-	return xyz_to_rec709 * paper.dye_to_xyz * out;
+	return xyz_to_rec2020 * paper.dye_to_xyz * out;
 }
 

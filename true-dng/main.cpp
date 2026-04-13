@@ -34,27 +34,29 @@ static PaperProfile pfe_2393("./data/paper/kodak_2393/");
 //static PaperProfile ultra("./data/paper/kodak_ultra_endura/");
 //static PaperProfile portra("./data/paper/kodak_portra_endura/");
 
-static FilmProfile film("./data/film/negative/generic_a/");
-
 uint32_t paper_model = 1;
 static bool monochrome = false;
 
 glm::mat3 film_to_paper;
 
-float dc = 1.0f;
-float c = 1.0f, m = 1.0f, y = 1.0;
-float contrast = dc, exposure = 1.0f;
+float cyan = 1.0f, magenta = 1.0f, yellow = 1.0;
+float contrast = 1.0f, exposure = 1.0f;
 uint32_t vp_xres = 1, vp_yres = 1;
 glm::vec3 negative[64 * 1024 * 1024];
 
+glm::vec3 to_display(glm::vec3 rec2020)
+{
+    return glm::pow(clamp(rec2020_to_rec709 * rec2020, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));
+}
+
 glm::vec3 tonemap(glm::vec3 neg_color)
 {
-    glm::vec3 pos_color = rec2020_to_rec709 * neg_color;
+    glm::vec3 pos_color = neg_color;
     if(paper_model == 1) pos_color = vp_tonemap(neg_color, contrast);
     else if(paper_model == 2) pos_color = paper_tonemap(endura, neg_color, contrast);
     else if(paper_model == 3) pos_color = paper_tonemap(pfe_2383, neg_color, contrast);
     if(monochrome) pos_color = glm::vec3(pos_color.g);
-    return glm::pow(clamp(pos_color, 0.0f, 1.0f), glm::vec3(1.0f / 2.2f));;
+    return pos_color;
 }
 
 inline uint32_t encode(const glm::vec3& in)
@@ -77,9 +79,9 @@ void render_preview(tinydng::DNGImage& src)
         glm::ivec2 vpc = uv * glm::vec2(src.width, src.height);
         uint32_t ni =  vpc.y * src.width + vpc.x ;
 
-        glm::vec3 neg_color = negative[ni] * glm::vec3(c, m, y) * exposure;
+        glm::vec3 neg_color = negative[ni] * glm::vec3(cyan, magenta, yellow) * exposure;
         glm::vec3 pos_color = tonemap(neg_color);
-        frame_buffer[i] = encode(pos_color);
+        frame_buffer[i] = encode(to_display(pos_color));
     }
 }
 
@@ -94,6 +96,7 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
 
 	dng_image.SetSubfileType(false, false, false);
 	dng_image.SetImageWidth(src.width);
+	dng_image.SetImageLength(src.height);
 	dng_image.SetImageLength(src.height);
 	dng_image.SetRowsPerStrip(src.height);
 
@@ -142,7 +145,7 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
         {
             for(uint32_t i = r.begin(); i < r.end(); ++i)
             {
-                glm::vec3 neg_color = negative[i] * glm::vec3(c, m, y) * exposure;
+                glm::vec3 neg_color = negative[i] * glm::vec3(cyan, magenta, yellow) * exposure;
 
                 //glm::vec3 raw_out = invert(neg_color, gamma - 1.5f);
                 //raw_out = rec2020_to_xyz * raw_out;
@@ -151,7 +154,7 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
                 //raw_data[i * 3 + 1] = (uint16_t)(raw_out.g * 0xffff + 0.5f);
                 //raw_data[i * 3 + 2] = (uint16_t)(raw_out.b * 0xffff + 0.5f);
 
-                glm::vec3 png_out = tonemap(neg_color);
+                glm::vec3 png_out = to_display(tonemap(neg_color));
                 png_data[i * 3 + 0] = (uint8_t)(png_out.r * 0xff + 0.5f);
                 png_data[i * 3 + 1] = (uint8_t)(png_out.g * 0xff + 0.5f);
                 png_data[i * 3 + 2] = (uint8_t)(png_out.b * 0xff + 0.5f);
@@ -171,7 +174,7 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
                 //raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
                 //raw_data[i] = (uint16_t)(raw_out * 0xffff + 0.5f);
 
-                float png_out = tonemap(neg_color).g;
+                float png_out = to_display(tonemap(neg_color)).g;
                 png_data[i] = (uint8_t)(png_out * 0xff + 0.5f);
             }
         });
@@ -184,12 +187,12 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
     dng_writer.AddImage(&dng_image);
     //dng_writer.WriteToFile(("output/dngs/" + filename + ".dng").c_str(), &err);
 
+    //stbi_write_png(("output/" + filename + ".png").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 0);
     stbi_write_jpg(("output/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
 }
 
 int main(int argc, char* argv[])
 {
-
     //film_to_paper = coupling_matrix(film, paper);
     glm::vec3 grey = vp_tonemap(glm::vec3(0.18f));
     printf("%f, %f, %f\n", grey.x, grey.y, grey.z);
@@ -210,6 +213,7 @@ int main(int argc, char* argv[])
     {
         std::string filename = "test";
         if(argc > 1) filename = std::string(argv[1]);
+        if(frame < 10) filename += '0';
         filename += std::to_string(frame);
 
         std::string warn, err;
@@ -219,7 +223,9 @@ int main(int argc, char* argv[])
         if(!ret)
         {
             printf("%s\n", err.c_str());
-            return 0;
+            if(frame > 37) return 0;
+            frame++;
+            continue;
         }
 
         if(images[0].samples_per_pixel == 3)
@@ -248,7 +254,6 @@ int main(int argc, char* argv[])
         else
         {
             monochrome = true;
-            contrast = dc = 0.7f;
             for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
             {
                 uint16_t* data = ((uint16_t*)images[0].data.data()) + i;
@@ -266,17 +271,41 @@ int main(int argc, char* argv[])
             SetDIBitsToDevice(hdc, 0, 0, XRES, YRES, 0, 0, 0, YRES, frame_buffer, &bmi, DIB_RGB_COLORS);
             Sleep(16);
 
-            if(GetAsyncKeyState('X'))
+            if(GetAsyncKeyState('Z'))
             {
                 glm::vec3 sum(0.0f);
                 for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
-                    sum += 1.0f / negative[i];
+                    sum += negative[i];
 
                 sum /= sum.g;
-                c = sum.r;
-                m = sum.g;
-                y = sum.b;
-                contrast = dc;
+                sum = 1.0f / sum;
+                cyan = sum.r;
+                magenta = sum.g;
+                yellow = sum.b;
+            }
+
+            if(GetAsyncKeyState('X'))
+            {
+                glm::vec3 sum(0.0f);
+                for(uint32_t i = 0; i < images[0].width * images[0].height; i += 57)
+                    sum += tonemap(negative[i] * glm::vec3(cyan, magenta, yellow) * exposure);
+
+                sum /= sum.g;
+                sum = glm::mix(sum, glm::vec3(1.0f), 0.5f);
+                printf("sum: %f, %f, %f\n", sum.x, sum.y, sum.z);
+
+                cyan *= sum.r;
+                magenta *= sum.g;
+                yellow *= sum.b;
+            }
+
+            if(GetAsyncKeyState('C'))
+            {
+                contrast = 1.0f;
+            }
+
+            if(GetAsyncKeyState('V'))
+            {
                 exposure = 1.0f;
             }
 
@@ -289,12 +318,12 @@ int main(int argc, char* argv[])
 
             if(GetAsyncKeyState(VK_SHIFT)) inc = 1.05;
 
-            if(GetAsyncKeyState('Q')) c *= inc;
-            if(GetAsyncKeyState('A')) c /= inc;
-            if(GetAsyncKeyState('W')) m *= inc;
-            if(GetAsyncKeyState('S')) m /= inc;
-            if(GetAsyncKeyState('E')) y *= inc;
-            if(GetAsyncKeyState('D')) y /= inc;
+            if(GetAsyncKeyState('Q')) cyan *= inc;
+            if(GetAsyncKeyState('A')) cyan /= inc;
+            if(GetAsyncKeyState('W')) magenta *= inc;
+            if(GetAsyncKeyState('S')) magenta /= inc;
+            if(GetAsyncKeyState('E')) yellow *= inc;
+            if(GetAsyncKeyState('D')) yellow /= inc;
 
             if(GetAsyncKeyState(VK_UP))   exposure /= inc;
             if(GetAsyncKeyState(VK_DOWN)) exposure *= inc;
@@ -309,11 +338,10 @@ int main(int argc, char* argv[])
                 save_image(images[0], filename);
                 break;
             }
-        } 
+        }
         while(true);
     } 
     while(true);
-
 
     return 0;
 }
