@@ -53,8 +53,10 @@ glm::vec3 tonemap(glm::vec3 neg_color)
 {
     glm::vec3 pos_color = neg_color;
     if(paper_model == 1) pos_color = vp_tonemap(neg_color, contrast);
-    else if(paper_model == 2) pos_color = paper_tonemap(endura, neg_color, contrast);
-    else if(paper_model == 3) pos_color = paper_tonemap(pfe_2383, neg_color, contrast);
+    else if(paper_model == 2) pos_color = xyz_to_rec2020 * endura.dye_to_xyz * vp_tonemap(endura.xyz_to_sens * rec2020_to_xyz * neg_color, contrast);
+    else if(paper_model == 3) pos_color = xyz_to_rec2020 * pfe_2383.dye_to_xyz * vp_tonemap(pfe_2383.xyz_to_sens * rec2020_to_xyz * neg_color, contrast);
+    else if(paper_model == 4) pos_color = paper_tonemap(endura, neg_color, contrast);
+    else if(paper_model == 5) pos_color = paper_tonemap(pfe_2383, neg_color, contrast);
     if(monochrome) pos_color = glm::vec3(pos_color.g);
     return pos_color;
 }
@@ -277,8 +279,8 @@ int main(int argc, char* argv[])
                 for(uint32_t i = 0; i < images[0].width * images[0].height; ++i)
                     sum += negative[i];
 
-                sum /= sum.g;
                 sum = 1.0f / sum;
+                sum /= sum.g;
                 cyan = sum.r;
                 magenta = sum.g;
                 yellow = sum.b;
@@ -310,20 +312,25 @@ int main(int argc, char* argv[])
             }
 
             float inc = 1.01;
+            float inc2 = 1.005;
             if(GetAsyncKeyState('1')) paper_model = 1;
             if(GetAsyncKeyState('2')) paper_model = 2;
             if(GetAsyncKeyState('3')) paper_model = 3;
             if(GetAsyncKeyState('4')) paper_model = 4;
             if(GetAsyncKeyState('0')) paper_model = 7;
 
-            if(GetAsyncKeyState(VK_SHIFT)) inc = 1.05;
+            if(GetAsyncKeyState(VK_SHIFT))
+            {
+                inc = 1.05;
+                inc2 = 1.05;
+            }
 
-            if(GetAsyncKeyState('Q')) cyan *= inc;
-            if(GetAsyncKeyState('A')) cyan /= inc;
-            if(GetAsyncKeyState('W')) magenta *= inc;
-            if(GetAsyncKeyState('S')) magenta /= inc;
-            if(GetAsyncKeyState('E')) yellow *= inc;
-            if(GetAsyncKeyState('D')) yellow /= inc;
+            if(GetAsyncKeyState('Q')) cyan *= inc2;
+            if(GetAsyncKeyState('A')) cyan /= inc2;
+            if(GetAsyncKeyState('W')) magenta *= inc2;
+            if(GetAsyncKeyState('S')) magenta /= inc2;
+            if(GetAsyncKeyState('E')) yellow *= inc2;
+            if(GetAsyncKeyState('D')) yellow /= inc2;
 
             if(GetAsyncKeyState(VK_UP))   exposure /= inc;
             if(GetAsyncKeyState(VK_DOWN)) exposure *= inc;

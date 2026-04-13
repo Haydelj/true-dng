@@ -341,8 +341,8 @@ inline glm::vec3 symetric_filmic_saturator(const glm::vec3& log_in)
 {
 	constexpr float dmax = 10.0f;
 	const float grey = atanh(2.0f * log_grey / dmax + 1.0f);
-	glm::vec3 out = log_in * glm::vec3(1.0f, 1.0f, 1.0f); //neutral
-	//glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f); //vision 3 500t C41
+	glm::vec3 out = log_in * glm::vec3(1.0f, 1.0f, 1.0f) * 1.2f; //neutral
+	//glm::vec3 out = log_in * glm::vec3(1.1f, 1.0f, 1.05f) * 1.1f; //vision 3 500t C41
 	out = -tanh(out - grey) * 0.5f - 0.5f;
 	return out * dmax - log_grey;
 }
