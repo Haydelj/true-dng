@@ -13,6 +13,7 @@
 #include "stb_image_write.h"
 #include "tiny_dng_loader.h"
 #include "tiny_dng_writer.h"
+#include "lodepng.h"
 
 #include <algorithm>
 #include <glm/glm.hpp>
@@ -87,6 +88,28 @@ void render_preview(tinydng::DNGImage& src)
     }
 }
 
+//split mix 64
+uint32_t split_mix_64(uint64_t& state)
+{
+    state += 0x9E3779B97F4A7C15;
+
+    uint64_t z = state;
+    z ^= z >> 30;
+    z *= 0xBF58476D1CE4E5B9;
+    z ^= z >> 27;
+    z *= 0x94D049BB133111EB;
+    z ^= z >> 31;
+    return z;
+}
+
+
+float randf(uint32_t randi)
+{
+    uint32_t bits = randi & 0x007FFFFFu | 0x3F800000u;
+    return *(float*)&bits - 1.0f;
+}
+
+
 static void save_image(tinydng::DNGImage& src, std::string filename)
 {
     tinydngwriter::DNGImage dng_image;
@@ -156,12 +179,14 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
                 //raw_data[i * 3 + 1] = (uint16_t)(raw_out.g * 0xffff + 0.5f);
                 //raw_data[i * 3 + 2] = (uint16_t)(raw_out.b * 0xffff + 0.5f);
 
+                uint64_t state = i;
                 glm::vec3 png_out = to_display(tonemap(neg_color));
-                png_data[i * 3 + 0] = (uint8_t)(png_out.r * 0xff + 0.5f);
-                png_data[i * 3 + 1] = (uint8_t)(png_out.g * 0xff + 0.5f);
-                png_data[i * 3 + 2] = (uint8_t)(png_out.b * 0xff + 0.5f);
+                png_data[i * 3 + 0] = (uint16_t)(png_out.r * 0xff + randf(split_mix_64(state)));
+                png_data[i * 3 + 1] = (uint16_t)(png_out.g * 0xff + randf(split_mix_64(state)));
+                png_data[i * 3 + 2] = (uint16_t)(png_out.b * 0xff + randf(split_mix_64(state)));
             }
         });
+        lodepng::encode(("output/" + filename + ".png").c_str(), (uint8_t*)png_data.data(), src.width, src.height, LCT_RGB, 8);
         dng_image.SetImageData((uint8_t*)raw_data.data(), raw_data.size() * 2);
     }
     else
@@ -176,10 +201,12 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
                 //raw_out = glm::clamp(raw_out * scale_factor, 0.0f, 1.0f);
                 //raw_data[i] = (uint16_t)(raw_out * 0xffff + 0.5f);
 
+                uint64_t state = i;
                 float png_out = to_display(tonemap(neg_color)).g;
-                png_data[i] = (uint8_t)(png_out * 0xff + 0.5f);
+                png_data[i] = (uint8_t)(png_out * 0xff + randf(split_mix_64(state)));
             }
         });
+        lodepng::encode(("output/" + filename + ".png").c_str(), (uint8_t*)png_data.data(), src.width, src.height, LCT_GREY, 8);
         dng_image.SetImageData((uint8_t*)raw_data.data(), raw_data.size() * 2);
     }
 
@@ -190,7 +217,7 @@ static void save_image(tinydng::DNGImage& src, std::string filename)
     //dng_writer.WriteToFile(("output/dngs/" + filename + ".dng").c_str(), &err);
 
     //stbi_write_png(("output/" + filename + ".png").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 0);
-    stbi_write_jpg(("output/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
+    //stbi_write_jpg(("output/" + filename + ".jpg").c_str(), src.width, src.height, src.samples_per_pixel, png_data.data(), 100);
 }
 
 int main(int argc, char* argv[])
